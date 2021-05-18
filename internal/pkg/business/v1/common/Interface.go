@@ -13,6 +13,7 @@ package common
 
 import (
 	"dmctl/internal/pkg/business/v1/common/typed"
+	"github.com/fsnotify/fsnotify"
 	"github.com/gin-gonic/gin"
 )
 
@@ -22,7 +23,8 @@ type Interface interface {
 	DmserverRestart(context *gin.Context, params map[string]interface{}) error
 	DmInit(context *gin.Context, params map[string]interface{}) error
 	Config(context *gin.Context, params map[string]*typed.ConfigValue) error
-	ExecSql(context *gin.Context) error
+	ExecSql(context *gin.Context, internalSql string) error
 	InitSql(context *gin.Context) error
 	ListenPort(context *gin.Context, serverType string, port string) error
+	ConfigsWatchDog(context *gin.Context, file string, watcher *fsnotify.Watcher) error
 }

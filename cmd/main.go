@@ -24,6 +24,7 @@ import (
 )
 
 func init() {
+	_ = os.Setenv("DM_HOME", tools.GetEnv("DM_HOME", "/opt/dmdbms"))
 	_ = os.Setenv("DM_INIT_ARCH_FLAG", tools.GetEnv("DM_INIT_ARCH_FLAG", "1"))
 	_ = os.Setenv("DM_INIT_CASE_SENSITIVE", tools.GetEnv("DM_INIT_CASE_SENSITIVE", "1"))
 	_ = os.Setenv("DM_INIT_CHARSET", tools.GetEnv("DM_INIT_CHARSET", "0"))
@@ -31,16 +32,20 @@ func init() {
 	_ = os.Setenv("DM_INIT_EXTENT_SIZE", tools.GetEnv("DM_INIT_EXTENT_SIZE", "16"))
 	_ = os.Setenv("DM_INIT_PAGE_SIZE", tools.GetEnv("DM_INIT_PAGE_SIZE", "8"))
 	_ = os.Setenv("DM_INIT_SYSAUDITOR_PWD", tools.GetEnv("DM_INIT_SYSAUDITOR_PWD", "Dameng7777"))
-	_ = os.Setenv("DM_INIT_PATH", tools.GetEnv("DM_INIT_PATH", "/opt/dmdbms/data"))
+	_ = os.Setenv("DM_INIT_PATH", tools.GetEnv("DM_INIT_PATH", tools.GetEnv("DM_HOME", "/opt/dmdbms")+"/data"))
 	_ = os.Setenv("DM_INIT_SYSDBA_PWD", tools.GetEnv("DM_INIT_SYSDBA_PWD", "Dameng7777"))
+	_ = os.Setenv("PERSISTENCE_LOGS", tools.GetEnv("PERSISTENCE_LOGS", "true"))
+	_ = os.Setenv("BAK_USE_AP", tools.GetEnv("BAK_USE_AP", "2"))
 }
 
 func main() {
-	fmt.Print(tools.BANNER)
-
 	//初始化k8s的日志工具
 	klog.InitFlags(nil)
 
+	flag.Set("logtostderr", "false")
+	flag.Set("alsologtostderr", "true")
+	flag.Set("log_file", "dmctl.log")
+	flag.Set("add_dir_header", "true")
 	//1. 关键字 defer 用于注册延迟调用。
 	//2. 这些调用直到 return 前才被执。因此，可以用来做资源清理。
 	//3. 多个defer语句，按先进后出的方式执行。
@@ -51,21 +56,39 @@ func main() {
 	//把用户传递的命令行参数解析为对应变量的值
 	flag.Parse()
 
+	klog.Info(tools.BANNER)
+
 	bootstrapModel := tools.GetEnv("BOOTSTRAP_MODEL", "single")
-	var configs string
-	exist, err := tools.PathExists("/opt/dmdbms/script.d/dmctl.ini")
+	configs := `{}`
+	path := tools.GetEnv("DM_HOME", "/opt/dmdbms") + "/script.d/dmctl.ini"
+	exist, err := tools.PathExists(path)
 	if err != nil {
-		klog.Errorf("get /opt/dmdbms/script.d/dmctl.ini error: %s......", err)
+		klog.Errorf("get %s error: %s......", path, err)
 	}
 
 	if exist {
-		bytes, err := ioutil.ReadFile("/opt/dmdbms/script.d/dmctl.ini")
+		bytes, err := ioutil.ReadFile(path)
 		if err != nil {
 			klog.Errorf("get dmctl.ini error: %s", err)
 		}
 		configs = fmt.Sprint(string(bytes))
 
-		cmdStr := "cat /opt/dmdbms/script.d/dmctl.ini > " + tools.GetEnv("DM_INIT_PATH", "/opt/dmdbms/data") + "/dmctl.ini"
+		/*
+			/   此处的/opt/dmdbms/script.d/dmctl.ini为k8s挂载进来的文件，只有读权限，因为dmctl.ini需要同步修改，所以copy一份放到挂载的pvc目录data下上进行持久化
+			/  /opt/dmdbms/data/dmctl.ini作为参数修改历史记录的副本，在修改参数时进行比较
+		*/
+		cmdStr := "cat ${DM_HOME}/script.d/dmctl.ini > ${DM_INIT_PATH}/dmctl.ini"
+		klog.Infof("save dmctl.ini in dm_init_path : %s", cmdStr)
+		execCmd := exec.Command("bash", "-c", cmdStr)
+		err = execCmd.Run()
+		if err != nil {
+			klog.Errorf("save dmctl.ini error: %s......", err)
+		}
+	}
+
+	//是否持久化数据库日志
+	if tools.GetEnv("PERSISTENCE_LOGS", "true") == "true" {
+		cmdStr := "cd ${DM_HOME} && mkdir -p ${DM_INIT_PATH}/log && rm -rf log && ln -s ${DM_INIT_PATH}/log log && touch ${DM_INIT_PATH}/container.ctl"
 		klog.Infof("save dmctl.ini in dm_init_path : %s", cmdStr)
 		execCmd := exec.Command("bash", "-c", cmdStr)
 		err = execCmd.Run()
@@ -78,16 +101,19 @@ func main() {
 		svc := &distribute.Service{CommonService: &common.Service{}}
 		switch bootstrapModel {
 		case "single":
-			fmt.Print(tools.SINGLE)
-			svc.Single(nil, configs)
+			klog.Info(tools.SINGLE)
+			err := svc.Single(nil, configs)
+			if err != nil {
+				klog.Errorf("Single Instance start error: %s......", err)
+			}
 		case "rww":
-			fmt.Print(tools.RWW)
+			klog.Info(tools.RWW)
 			klog.Infof("distributing rww instance")
 		case "ddw":
-			fmt.Print(tools.DDW)
+			klog.Info(tools.DDW)
 			klog.Infof("distributing ddw instance")
 		case "monitor":
-			fmt.Print(tools.MONITOR)
+			klog.Info(tools.MONITOR)
 			klog.Infof("distributing monitor instance")
 		}
 

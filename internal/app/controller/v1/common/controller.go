@@ -90,7 +90,7 @@ func (controller Controller) config(context *gin.Context) (*frame.Response, *fra
 }
 
 func (controller Controller) execSql(context *gin.Context) (*frame.Response, *frame.Error) {
-	err := controller.service.ExecSql(context)
+	err := controller.service.ExecSql(context, "")
 	if err != nil {
 		return nil, frame.DefaultError(err)
 	}
