@@ -39,6 +39,9 @@ var exitVirtualListening = make(chan string)
 var dmServer *exec.Cmd
 var virtualListening *exec.Cmd
 
+const HOT_CONFIG = "dynamic"   //热修改配置，可以在数据库运行时修改
+const STATIC_CONFIG = "static" //冷修改，数据库停止时修改
+
 func asyncLog(reader io.ReadCloser, logTitle string) error {
 	cache := ""
 	buf := make([]byte, 1024, 1024)
@@ -164,7 +167,7 @@ func (service Service) DmserverPause(context *gin.Context) error {
 					klog.Infof("stop virtualListening: %s......", stop)
 					break Loop
 				default:
-					cmd := exec.Command("nc", "-lp", tools.GetEnv("DM_INI_PORT_NUM", "5236"))
+					cmd := exec.Command("nc", "-lp", typed.DbPort)
 					//使创建的线程都在同一个线程组里面，便于停止线程及子线程
 					cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 					virtualListening = cmd
@@ -198,8 +201,8 @@ func (service Service) DmserverRestart(context *gin.Context, params map[string]i
 }
 
 func (service Service) ExecSql(context *gin.Context, internalSql string) error {
-	port := tools.GetEnv("DM_INI_PORT_NUM", "5236")
-	_, err := net.Dial("tcp", "localhost:"+port)
+
+	_, err := net.Dial("tcp", "localhost:"+typed.DbPort)
 	if err != nil {
 		klog.Infof("dmserver has yet to start, can not exec sql now")
 		return err
@@ -218,7 +221,7 @@ func (service Service) ExecSql(context *gin.Context, internalSql string) error {
 		klog.Infof("create /tmp/everything.sql error: %s", err)
 		return err
 	}
-	execCmdStr := "echo 'exit;' >> /tmp/everything.sql && cd ${DM_HOME}/bin && ./disql SYSDBA/'\"" + tools.GetEnv("DM_INIT_SYSDBA_PWD", "Dameng7777") + "\"'@localhost:" + port + " '`/tmp/everything.sql'"
+	execCmdStr := "echo 'exit;' >> /tmp/everything.sql && cd ${DM_HOME}/bin && ./disql SYSDBA/'\"" + tools.GetEnv("DM_INIT_SYSDBA_PWD", "Dameng7777") + "\"'@localhost:" + typed.DbPort + " '`/tmp/everything.sql'"
 	klog.Infof("exec sql cmd : %s", execCmdStr)
 	execCmd := exec.Command("bash", "-c", execCmdStr)
 	err = execCmd.Run()
@@ -230,8 +233,7 @@ func (service Service) ExecSql(context *gin.Context, internalSql string) error {
 }
 
 func (service Service) InitSql(context *gin.Context) error {
-	port := tools.GetEnv("DM_INI_PORT_NUM", "5236")
-	_, err := net.Dial("tcp", "localhost:"+port)
+	_, err := net.Dial("tcp", "localhost:"+typed.DbPort)
 	if err != nil {
 		klog.Infof("dmserver has yet to start, can not exec sql now")
 		return err
@@ -244,7 +246,7 @@ func (service Service) InitSql(context *gin.Context) error {
 	}
 
 	if exist {
-		execCmdStr := "cat ${DM_HOME}/script.d/genesis.sql > /tmp/genesis.sql && echo 'exit;' >> /tmp/genesis.sql && cd ${DM_HOME}/bin && ./disql SYSDBA/'\"" + tools.GetEnv("DM_INIT_SYSDBA_PWD", "Dameng7777") + "\"'@localhost:" + port + " '`/tmp/genesis.sql'"
+		execCmdStr := "cat ${DM_HOME}/script.d/genesis.sql > /tmp/genesis.sql && echo 'exit;' >> /tmp/genesis.sql && cd ${DM_HOME}/bin && ./disql SYSDBA/'\"" + tools.GetEnv("DM_INIT_SYSDBA_PWD", "Dameng7777") + "\"'@localhost:" + typed.DbPort + " '`/tmp/genesis.sql'"
 		klog.Infof("exec sql cmd : %s", execCmdStr)
 		execCmd := exec.Command("bash", "-c", execCmdStr)
 		err = execCmd.Run()
@@ -299,7 +301,7 @@ func (service Service) DmInit(context *gin.Context, params map[string]interface{
 	return nil
 }
 
-func (service Service) Config(context *gin.Context, params map[string]*typed.ConfigValue) error {
+func (service Service) Config(context *gin.Context, params map[string]*typed.ConfigValue, configModel string) error {
 	isServerRestart := 0
 	var editSql string
 	for name, v := range params {
@@ -320,7 +322,7 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 		if v.Group != "" {
 			klog.Infof("ConfigParam: %s:%s:%s:%s", v.Type, v.Group, name, v.Value)
 			//首先查看文件中有没有该分组,有就跳过，没有就创建
-			checkGroupCmdStr := "res=$(sed -n '/^\\[" + v.Group + "\\]/'p " + configPath + ");[[ -z $res ]] && echo [" + v.Group + "] >> " + configPath + " || echo group exist"
+			checkGroupCmdStr := "res=$(sed -r -n '/^\\[" + v.Group + "\\]/'p " + configPath + ");[[ -z $res ]] && echo [" + v.Group + "] >> " + configPath + " || echo group exist"
 			klog.Infof("check %s group exist command: %s", configPath, checkGroupCmdStr)
 			checkGroupCmd := exec.Command("bash", "-c", checkGroupCmdStr)
 			err := checkGroupCmd.Run()
@@ -329,7 +331,7 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 				return err
 			}
 			//在属组下修改or新增参数
-			editConfigCmdStr := "res=$(sed -n '/^" + name + "/'p " + configPath + ");[[ -n $res ]] && sed -i -r -e 's$^" + name + "(.*)$" + name + "=" + v.Value + " #" + v.Group + " #edit$' " + configPath + " || sed -i '/\\[" + v.Group + "\\]/a" + name + "=" + v.Value + " #" + v.Group + " #edit' " + configPath
+			editConfigCmdStr := "res=$(sed -r -n '/^" + name + "/'p " + configPath + ");[[ -n $res ]] && sed -i -r -e 's$^" + name + "(.*)$" + name + "=" + v.Value + " #" + v.Group + " #edit$' " + configPath + " || sed -i '/\\[" + v.Group + "\\]/a" + name + "=" + v.Value + " #" + v.Group + " #edit' " + configPath
 			klog.Infof("edit %s command: %s", configPath, editConfigCmdStr)
 			cmd := exec.Command("bash", "-c", editConfigCmdStr)
 			err = cmd.Run()
@@ -340,12 +342,12 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 			isServerRestart++
 		} else {
 			klog.Infof("ConfigParam: %s:%s:%s", v.Type, name, v.Value)
-			if v.Type == "dm.ini" {
+			if v.Type == "dm.ini" && configModel == HOT_CONFIG {
 				_, ok := pkg.DmIni[name]
 				if ok {
 					if pkg.DmIni[name].Attribute == 0 || pkg.DmIni[name].Attribute == 1 {
 						//修改or新增参数
-						editConfigCmdStr := "res=$(sed -n '/^" + name + "/'p " + configPath + ");[[ -n $res ]] && sed -i -r -e 's$^" + name + "(.*)$" + name + "=" + v.Value + " #edit$' " + configPath + " || echo " + name + "=" + v.Value + " #edit >>" + configPath
+						editConfigCmdStr := "res=$(sed -r -n '/^" + name + "/'p " + configPath + ");[[ -n $res ]] && sed -i -r -e 's$^" + name + "(.*)$" + name + "=" + v.Value + " #edit$' " + configPath + " || echo " + name + "=" + v.Value + " #edit >>" + configPath
 						klog.Infof("edit %s command: %s", configPath, editConfigCmdStr)
 						cmd := exec.Command("bash", "-c", editConfigCmdStr)
 						err := cmd.Run()
@@ -372,7 +374,7 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 				}
 			} else {
 				//修改or新增参数
-				editConfigCmdStr := "res=$(sed -n '/^" + name + "/'p " + configPath + ");[[ -n $res ]] && sed -i -r -e 's$^" + name + "(.*)$" + name + "=" + v.Value + " #edit$' " + configPath + " || echo " + name + "=" + v.Value + " #edit >>" + configPath
+				editConfigCmdStr := "res=$(sed -r -n '/^" + name + "/'p " + configPath + ");[[ -n $res ]] && sed -i -r -e 's$^" + name + "(.*)$" + name + "=" + v.Value + " #edit$' " + configPath + " || echo " + name + "=" + v.Value + " #edit >>" + configPath
 				klog.Infof("edit %s command: %s", configPath, editConfigCmdStr)
 				cmd := exec.Command("bash", "-c", editConfigCmdStr)
 				err := cmd.Run()
@@ -389,12 +391,12 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 		klog.Infof("editSql content: %s......", editSql)
 		err := service.ExecSql(context, editSql)
 		if err != nil {
-			klog.Errorf("ExecSql %s error: %s......", err)
+			klog.Errorf("ExecSql %s error: %s......", editSql, err)
 			return err
 		}
 	}
 
-	if isServerRestart > 0 {
+	if isServerRestart > 0 && configModel == HOT_CONFIG {
 		klog.Infof("config params contains manual or static params, need to restart dmserver to make it useful")
 		service.DmserverRestart(context, nil)
 	}
@@ -425,7 +427,8 @@ func (service Service) ConfigsWatchDog(context *gin.Context, file string, watche
 				if !ok {
 					return
 				}
-				klog.Infof("dmctl.ini watch event: %s", event)
+				//klog.Infof("dmctl.ini watch event: %s", event)
+				klog.V(8).Infof("dmctl.ini watch event: %s", event)
 				if event.Op&fsnotify.Remove == fsnotify.Remove {
 					klog.Infof("dmctl.ini has been wrote")
 
@@ -487,7 +490,7 @@ func (service Service) ConfigsWatchDog(context *gin.Context, file string, watche
 							}
 							klog.Infof("dmConfigs: %s", dmConfigs)
 
-							err = service.Config(context, dmConfigs)
+							err = service.Config(context, dmConfigs, HOT_CONFIG)
 							if err != nil {
 								klog.Errorf("modify Configs err: %s", err)
 							} else {

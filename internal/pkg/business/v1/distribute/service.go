@@ -16,9 +16,13 @@ import (
 	"dmctl/internal/pkg/business/v1/common/typed"
 	"dmctl/tools"
 	"encoding/json"
+	"fmt"
 	"github.com/fsnotify/fsnotify"
 	"github.com/gin-gonic/gin"
+	"io/ioutil"
 	"k8s.io/klog/v2"
+	"os/exec"
+	"strings"
 )
 
 type Service struct {
@@ -27,15 +31,10 @@ type Service struct {
 
 func (service Service) Single(context *gin.Context, inventory string) error {
 	var inventoryArrs []*typed.ConfigValue
-	if err := json.Unmarshal([]byte(inventory), &inventoryArrs); err != nil {
-		klog.Errorf("Unmarshal Single inventoryArrs error: %s", err)
-		return err
-	}
-	klog.Infof("inventoryArrs parse result: %s", inventoryArrs)
-
-	//Step 1: dminit
+	//Step 1: dminit & persistence logs
 	// check db instance exist
-	exist, err := tools.PathExists(tools.GetEnv("DM_INIT_PATH", tools.GetEnv("DM_HOME", "/opt/dmdbms")+"/data") + "/" + tools.GetEnv("DM_INIT_DB_NAME", "DAMENG"))
+	instancePath := tools.GetEnv("DM_INIT_PATH", tools.GetEnv("DM_HOME", "/opt/dmdbms")+"/data") + "/" + tools.GetEnv("DM_INIT_DB_NAME", "DAMENG")
+	exist, err := tools.PathExists(instancePath)
 	if !exist {
 		klog.Infof("----------Single Step 1: dminit start")
 		err = service.CommonService.DmInit(context, nil)
@@ -46,6 +45,61 @@ func (service Service) Single(context *gin.Context, inventory string) error {
 	} else {
 		klog.Infof("----------Single Step 1: instance exist & dminit skip")
 	}
+
+	//是否持久化数据库日志
+	if tools.GetEnv("PERSISTENCE_LOGS", "true") == "true" {
+		cmdStr := "cd ${DM_HOME} && mkdir -p ${DM_INIT_PATH}/log && rm -rf log && ln -s ${DM_INIT_PATH}/log log && touch ${DM_INIT_PATH}/container.ctl"
+		klog.Infof("persistence logs cmd: %s", cmdStr)
+		execCmd := exec.Command("bash", "-c", cmdStr)
+		err = execCmd.Run()
+		if err != nil {
+			klog.Errorf("save dmctl.ini error: %s......", err)
+		}
+	}
+
+	//创建dmctl.ini配置文件
+	path := tools.GetEnv("DM_HOME", "/opt/dmdbms") + "/script.d/dmctl.ini"
+	dmctlIniExist, err := tools.PathExists(path)
+	if err != nil {
+		klog.Errorf("get %s error: %s......", path, err)
+	}
+
+	if dmctlIniExist {
+		bytes, err := ioutil.ReadFile(path)
+		if err != nil {
+			klog.Errorf("get dmctl.ini error: %s", err)
+		}
+		inventory = fmt.Sprint(string(bytes))
+		klog.Infof("dmctl.ini content: %s", inventory)
+		/*
+			/   此处的/opt/dmdbms/script.d/dmctl.ini为k8s挂载进来的文件，只有读权限，因为dmctl.ini需要同步修改，所以copy一份放到挂载的pvc目录data下上进行持久化
+			/  /opt/dmdbms/data/dmctl.ini作为参数修改历史记录的副本，在修改参数时进行比较
+		*/
+		cmdStr := "cat ${DM_HOME}/script.d/dmctl.ini > ${DM_INIT_PATH}/dmctl.ini"
+		klog.Infof("save dmctl.ini in dm_init_path : %s", cmdStr)
+		execCmd := exec.Command("bash", "-c", cmdStr)
+		err = execCmd.Run()
+		if err != nil {
+			klog.Errorf("save dmctl.ini error: %s......", err)
+		}
+	} else {
+		err := tools.CreateDir(tools.GetEnv("DM_HOME", "/opt/dmdbms") + "/script.d")
+		if err != nil {
+			return err
+		}
+		err = tools.CreateFile(path, "[]", false)
+		if err != nil {
+			return err
+		}
+	}
+
+	//解析dm.ini配置参数
+	if err := json.Unmarshal([]byte(inventory), &inventoryArrs); err != nil {
+		klog.Errorf("Unmarshal Single inventoryArrs error: %s", err)
+		return err
+	}
+	klog.Infof("inventoryArrs parse result: %s", inventoryArrs)
+
 	//Step 2: config dm.ini & dmarch.ini
 	klog.Infof("----------Single Step 2: config start")
 	dmConfigs := make(map[string]*typed.ConfigValue)
@@ -82,7 +136,7 @@ func (service Service) Single(context *gin.Context, inventory string) error {
 	}
 	klog.Infof("dmConfigs: %s", dmConfigs)
 	//start config
-	err = service.CommonService.Config(context, dmConfigs)
+	err = service.CommonService.Config(context, dmConfigs, common.STATIC_CONFIG)
 	if err != nil {
 		klog.Errorf("modify Configs err: %s", err)
 	}
@@ -94,10 +148,32 @@ func (service Service) Single(context *gin.Context, inventory string) error {
 	}
 	klog.Infof("----------Single Step 2: config end")
 
+	dmIniExist, err := tools.PathExists(instancePath + "/dm.ini")
+	if err != nil {
+		klog.Errorf("get dm.ini error: %s......", err)
+	}
+	if dmIniExist {
+		//获取db_port
+		getPortNumCmdStr := `res=$(sed -r -n '/^PORT_NUM/'p ` + instancePath + `/dm.ini);res=${res#*=};res=${res%%#*};echo $res`
+		klog.Infof("getPortNumCmd : %s", getPortNumCmdStr)
+		getPortNumCmd := exec.Command("bash", "-c", getPortNumCmdStr)
+		portNum_bytes, err := getPortNumCmd.CombinedOutput()
+		if err != nil {
+			klog.Errorf("getPortNum error: %s......", err)
+			return err
+		}
+		dbPort := string(portNum_bytes)
+		dbPort = strings.Trim(dbPort, "\n")
+		typed.DbPort = dbPort
+		klog.Infof("DB_PORT is [%s]", typed.DbPort)
+	} else {
+		klog.Infof("dm.ini has yet created!")
+	}
+
 	//Step 3: exec init sql script after dmserver is running
 	klog.Infof("----------Single Step 3: exec init sql script after dmserver is running start")
 	go func() {
-		err = service.CommonService.ListenPort(context, "tcp", tools.GetEnv("DM_INI_PORT_NUM", "5236"))
+		err = service.CommonService.ListenPort(context, "tcp", typed.DbPort)
 		if err != nil {
 			klog.Errorf("ListenPort err: %s", err)
 		}

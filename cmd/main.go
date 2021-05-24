@@ -16,11 +16,8 @@ import (
 	"dmctl/internal/pkg/business/v1/distribute"
 	"dmctl/tools"
 	"flag"
-	"fmt"
-	"io/ioutil"
 	"k8s.io/klog/v2"
 	"os"
-	"os/exec"
 )
 
 func init() {
@@ -59,50 +56,14 @@ func main() {
 	klog.Info(tools.BANNER)
 
 	bootstrapModel := tools.GetEnv("BOOTSTRAP_MODEL", "single")
-	configs := `{}`
-	path := tools.GetEnv("DM_HOME", "/opt/dmdbms") + "/script.d/dmctl.ini"
-	exist, err := tools.PathExists(path)
-	if err != nil {
-		klog.Errorf("get %s error: %s......", path, err)
-	}
-
-	if exist {
-		bytes, err := ioutil.ReadFile(path)
-		if err != nil {
-			klog.Errorf("get dmctl.ini error: %s", err)
-		}
-		configs = fmt.Sprint(string(bytes))
-
-		/*
-			/   此处的/opt/dmdbms/script.d/dmctl.ini为k8s挂载进来的文件，只有读权限，因为dmctl.ini需要同步修改，所以copy一份放到挂载的pvc目录data下上进行持久化
-			/  /opt/dmdbms/data/dmctl.ini作为参数修改历史记录的副本，在修改参数时进行比较
-		*/
-		cmdStr := "cat ${DM_HOME}/script.d/dmctl.ini > ${DM_INIT_PATH}/dmctl.ini"
-		klog.Infof("save dmctl.ini in dm_init_path : %s", cmdStr)
-		execCmd := exec.Command("bash", "-c", cmdStr)
-		err = execCmd.Run()
-		if err != nil {
-			klog.Errorf("save dmctl.ini error: %s......", err)
-		}
-	}
-
-	//是否持久化数据库日志
-	if tools.GetEnv("PERSISTENCE_LOGS", "true") == "true" {
-		cmdStr := "cd ${DM_HOME} && mkdir -p ${DM_INIT_PATH}/log && rm -rf log && ln -s ${DM_INIT_PATH}/log log && touch ${DM_INIT_PATH}/container.ctl"
-		klog.Infof("save dmctl.ini in dm_init_path : %s", cmdStr)
-		execCmd := exec.Command("bash", "-c", cmdStr)
-		err = execCmd.Run()
-		if err != nil {
-			klog.Errorf("save dmctl.ini error: %s......", err)
-		}
-	}
+	inventory := `[]`
 
 	go func() {
 		svc := &distribute.Service{CommonService: &common.Service{}}
 		switch bootstrapModel {
 		case "single":
 			klog.Info(tools.SINGLE)
-			err := svc.Single(nil, configs)
+			err := svc.Single(nil, inventory)
 			if err != nil {
 				klog.Errorf("Single Instance start error: %s......", err)
 			}

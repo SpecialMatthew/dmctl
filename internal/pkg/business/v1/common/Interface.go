@@ -22,7 +22,7 @@ type Interface interface {
 	DmserverPause(context *gin.Context) error
 	DmserverRestart(context *gin.Context, params map[string]interface{}) error
 	DmInit(context *gin.Context, params map[string]interface{}) error
-	Config(context *gin.Context, params map[string]*typed.ConfigValue) error
+	Config(context *gin.Context, params map[string]*typed.ConfigValue, configModel string) error
 	ExecSql(context *gin.Context, internalSql string) error
 	InitSql(context *gin.Context) error
 	ListenPort(context *gin.Context, serverType string, port string) error

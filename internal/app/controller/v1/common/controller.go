@@ -29,7 +29,7 @@ func NewController(service common.Interface) *Controller {
 func (controller *Controller) Register(engine *frame.DmEngine) {
 	engine.POST("/dmctl/v1/dmserver/start", controller.dmserverStart)
 	engine.POST("/dmctl/v1/init", controller.init)
-	engine.POST("/dmctl/v1/config", controller.config)
+	engine.POST("/dmctl/v1/config/:configModel", controller.config)
 	engine.POST("/dmctl/v1/execSql", controller.execSql)
 	engine.GET("/dmctl/v1/dmserver/pause", controller.dmserverPause)
 	engine.GET("/dmctl/v1/dmserver/restart", controller.dmserverRestart)
@@ -82,7 +82,7 @@ func (controller Controller) config(context *gin.Context) (*frame.Response, *fra
 	if err := context.Bind(&params); err != nil {
 		return nil, frame.BadRequestError(err)
 	}
-	err := controller.service.Config(context, params)
+	err := controller.service.Config(context, params, context.Query("configModel"))
 	if err != nil {
 		return nil, frame.DefaultError(err)
 	}

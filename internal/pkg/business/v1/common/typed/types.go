@@ -11,6 +11,8 @@
 
 package typed
 
+var DbPort string
+
 type ConfigValue struct {
 	Group string `json:"group"`
 	Name  string `json:"name"`

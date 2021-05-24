@@ -43,7 +43,7 @@ func CreateDir(filePath string) error {
 			klog.Infof("mkdir failed![%v]\n", err)
 			return err
 		} else {
-			klog.Infof("mkdir success!\n")
+			klog.Infof("mkdir [%v] success!\n", filePath)
 			return err
 		}
 	}
@@ -66,7 +66,7 @@ func PathExists(path string) (bool, error) {
 func CreateFile(fileName string, fileContent string, override bool) error {
 	exist, err := PathExists(fileName)
 	if err != nil {
-		klog.Errorf("get dir error![%v]\n", err)
+		klog.Errorf("get file error![%v]\n", err)
 		return err
 	}
 	if exist && !override {
