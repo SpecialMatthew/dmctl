@@ -14,10 +14,18 @@ package typed
 var DbPort string
 
 type ConfigValue struct {
-	Group string `json:"group"`
-	Name  string `json:"name"`
-	Value string `json:"value"`
-	Type  string `json:"type"`
+	Group      string `json:"group"`
+	Name       string `json:"name"`
+	Value      string `json:"value"`
+	Type       string `json:"type"`
+	Node       string `json:"node"`
+	Repeatable bool   `json:"repeatable"`
+}
+
+type ConfigFile struct {
+	BootStrapModel string                  `json:"bootStrapModel"`
+	Configs        map[string]*ConfigValue `json:"configs"`
+	Replicas       int                     `json:"replicas"`
 }
 
 //静态， 可以被动态修改， 修改后重启服务器才能生效。
@@ -36,4 +44,10 @@ type DmIni struct {
 	ValueType    string `json:"valueType"`
 	Describe     string `json:"describe"`
 	Group        string `json:"group"`
+}
+
+type DdwBak struct {
+	DdwBakPath string `json:"ddwBakPath"`
+	BakJson    string `json:"bakJson"`
+	MetaJson   string `json:"metaJson"`
 }

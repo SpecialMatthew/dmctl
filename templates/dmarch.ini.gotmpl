@@ -1,0 +1,18 @@
+{{- with .Configs }}
+{{- if or (eq $.BootStrapModel "ddw_p") (eq $.BootStrapModel "rww_p") }}
+{{- range $index := until (int (default "1" (sub (int $.Replicas) 1) )) }}
+[ARCHIVE_REALTIME{{ add1 $index }}]
+ARCH_TYPE = REALTIME #实时归档类型
+ARCH_DEST = GRP1_RT_{{ add $index 2 }} #实时归档目标实例名
+{{- end }}
+{{- else if or (eq $.BootStrapModel "ddw_s") (eq $.BootStrapModel "rww_p") }}
+[ARCHIVE_REALTIME]
+ARCH_TYPE = REALTIME #实时归档类型
+ARCH_DEST = GRP1_RT_1 #实时归档目标实例名
+{{- end }}
+[ARCHIVE_LOCAL1]
+ARCH_TYPE = {{ default "LOCAL" (index . "ARCHIVE_LOCAL1_ARCH_TYPE").Value }} #本地归档类型
+ARCH_DEST = {{ default "/opt/dmdbms/data/arch" (index . "ARCHIVE_LOCAL1_ARCH_DEST").Value }}        #/dm/data/DAMENG/arch #本地归档文件存放路径
+ARCH_FILE_SIZE = {{ default "128" (index . "ARCHIVE_LOCAL1_ARCH_FILE_SIZE").Value }} #单位 Mb，本地单个归档文件最大值
+ARCH_SPACE_LIMIT = {{ default "8192" (index . "ARCHIVE_LOCAL1_ARCH_SPACE_LIMIT").Value }} #单位 Mb， 0 表示无限制，范围 1024~2147483647M
+{{- end }}

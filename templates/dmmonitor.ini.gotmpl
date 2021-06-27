@@ -1,0 +1,12 @@
+{{- with .Configs }}
+MON_DW_CONFIRM = {{ default "1" (index . "MON_DW_CONFIRM").Value }} #确认监视器模式
+MON_LOG_PATH = {{ default "1" (index . "MON_LOG_PATH").Value }} #/dm/data/log #监视器日志文件存放路径
+MON_LOG_INTERVAL = {{ default "60" (index . "MON_LOG_INTERVAL").Value }} #每隔 60s 定时记录系统信息到日志文件
+MON_LOG_FILE_SIZE = {{ default "32" (index . "MON_LOG_FILE_SIZE").Value }} #每个日志文件最大 32M
+MON_LOG_SPACE_LIMIT = {{ default "0" (index . "MON_LOG_SPACE_LIMIT").Value }} #不限定日志文件总占用空间
+[GRP1]
+    MON_INST_OGUID = {{ default "453331" (index . "GRP1_MON_INST_OGUID").Value }} #组 GRP1 的唯一 OGUID 值
+{{- range $index := until (int (default "1" $.Replicas)) }}
+    MON_DW_IP = {{ repeatGet $.Configs $index "GRP1_MON_DW_IP" }}
+{{- end }}
+{{- end }}

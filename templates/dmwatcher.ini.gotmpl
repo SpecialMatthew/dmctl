@@ -1,0 +1,14 @@
+{{- with .Configs -}}
+[GRP1]
+DW_TYPE = {{ default "GLOBAL" (index . "GRP1_DW_TYPE").Value }}  #全局守护类型
+DW_MODE = {{ default "AUTO" (index . "GRP1_DW_MODE").Value }} #自动切换模式
+DW_ERROR_TIME = {{ default "10" (index . "GRP1_DW_ERROR_TIME").Value }} #远程守护进程故障认定时间
+INST_RECOVER_TIME = {{ default "60" (index . "GRP1_INST_RECOVER_TIME").Value }} #主库守护进程启动恢复的间隔时间
+INST_ERROR_TIME = {{ default "10" (index . "GRP1_INST_ERROR_TIME").Value }} #本地实例故障认定时间
+INST_OGUID = {{ default "453331" (index . "GRP1_INST_OGUID").Value }} #守护系统唯一 OGUID 值
+INST_INI = {{ (index . "GRP1_INST_INI").Value }} #dm.ini 配置文件路径
+INST_AUTO_RESTART = {{ default "1" (index . "GRP1_INST_AUTO_RESTART").Value }} #打开实例的自动启动功能
+INST_STARTUP_CMD = {{ (index . "GRP1_INST_STARTUP_CMD").Value }} #命令行方式启动
+RLOG_SEND_THRESHOLD = {{ default "0" (index . "GRP1_RLOG_SEND_THRESHOLD").Value }} #指定主库发送日志到备库的时间阈值，默认关闭DM 数据守护与读写分离集群 V4.0
+RLOG_APPLY_THRESHOLD = {{ default "0" (index . "GRP1_RLOG_APPLY_THRESHOLD").Value }} #指定备库重演日志的时间阈值，默认关闭
+{{- end }}

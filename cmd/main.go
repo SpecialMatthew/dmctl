@@ -33,6 +33,10 @@ func init() {
 	_ = os.Setenv("DM_INIT_SYSDBA_PWD", tools.GetEnv("DM_INIT_SYSDBA_PWD", "Dameng7777"))
 	_ = os.Setenv("PERSISTENCE_LOGS", tools.GetEnv("PERSISTENCE_LOGS", "true"))
 	_ = os.Setenv("BAK_USE_AP", tools.GetEnv("BAK_USE_AP", "2"))
+	_ = os.Setenv("REPLICAS", tools.GetEnv("REPLICAS", "1"))
+	_ = os.Setenv("NAMESPACE", tools.GetEnv("NAMESPACE", "default"))
+	_ = os.Setenv("DM_OGUID", tools.GetEnv("DM_OGUID", "453331"))
+	_ = os.Setenv("OBJECT_NAME", tools.GetEnv("OBJECT_NAME", "dm"))
 }
 
 func main() {
@@ -69,15 +73,32 @@ func main() {
 			}
 		case "rww":
 			klog.Info(tools.RWW)
-			klog.Infof("distributing rww instance")
+			err := svc.RWW(nil, inventory)
+			if err != nil {
+				klog.Errorf("RWW Instance start error: %s......", err)
+			}
 		case "ddw":
 			klog.Info(tools.DDW)
-			klog.Infof("distributing ddw instance")
+			err := svc.DDW(nil, inventory)
+			if err != nil {
+				klog.Errorf("DDW Instance start error: %s......", err)
+			}
 		case "monitor":
 			klog.Info(tools.MONITOR)
-			klog.Infof("distributing monitor instance")
+			err := svc.Monitor(nil, inventory)
+			if err != nil {
+				klog.Errorf("Monitor start error: %s......", err)
+			}
+		case "share":
+			klog.Info(tools.SHARE)
+			err := svc.Share(nil, inventory)
+			if err != nil {
+				klog.Errorf("share backupSets error: %s......", err)
+			}
+		case "test":
+			klog.Info(tools.TEST)
+			svc.Test(nil)
 		}
-
 	}()
 
 	//应用的启动入口

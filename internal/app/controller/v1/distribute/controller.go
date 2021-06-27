@@ -12,6 +12,7 @@
 package distribute
 
 import (
+	"dmctl/internal/pkg/business/v1/common/typed"
 	"dmctl/internal/pkg/business/v1/distribute"
 	"dmctl/internal/pkg/frame"
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,12 @@ func (controller *Controller) Register(engine *frame.DmEngine) {
 	engine.POST("/dmctl/v1/rww", controller.rww)
 	engine.POST("/dmctl/v1/ddw", controller.ddw)
 	engine.POST("/dmctl/v1/monitor", controller.monitor)
+	engine.GET("/dmctl/v1/ddwWakeup", controller.ddwWakeUp)
+	engine.GET("/dmctl/v1/monitorWakeUp", controller.monitorWakeUp)
+	engine.GET("/dmctl/v1/primaryDbWakeUp", controller.primaryDbWakeUp)
+	engine.GET("/dmctl/health", controller.health)
+	engine.POST("/dmctl/v1/bakJsonRestore", controller.BakJsonRestore)
+	engine.GET("/dmctl/v1/monitorCheck", controller.monitorCheck)
 }
 
 func (controller Controller) single(context *gin.Context) (*frame.Response, *frame.Error) {
@@ -51,4 +58,52 @@ func (controller Controller) ddw(context *gin.Context) (*frame.Response, *frame.
 
 func (controller Controller) monitor(context *gin.Context) (*frame.Response, *frame.Error) {
 	return frame.OK("开始部署monitor..."), nil
+}
+
+func (controller Controller) ddwWakeUp(context *gin.Context) (*frame.Response, *frame.Error) {
+	err := controller.service.DDWWakeUp(context)
+	if err != nil {
+		return nil, frame.DefaultError(err)
+	}
+	return frame.OK("ddwWakeup success..."), nil
+}
+
+func (controller Controller) monitorWakeUp(context *gin.Context) (*frame.Response, *frame.Error) {
+	err := controller.service.MonitorWakeUp(context)
+	if err != nil {
+		return nil, frame.DefaultError(err)
+	}
+	return frame.OK("monitorWakeUp success..."), nil
+}
+
+func (controller Controller) primaryDbWakeUp(context *gin.Context) (*frame.Response, *frame.Error) {
+	err := controller.service.PrimaryDbWakeUp(context)
+	if err != nil {
+		return nil, frame.DefaultError(err)
+	}
+	return frame.OK("monitorWakeUp success..."), nil
+}
+
+func (controller Controller) health(context *gin.Context) (*frame.Response, *frame.Error) {
+	return frame.OK("healthy dmctl..."), nil
+}
+
+func (controller Controller) BakJsonRestore(context *gin.Context) (*frame.Response, *frame.Error) {
+	var ddwBak *typed.DdwBak
+	if err := context.Bind(&ddwBak); err != nil {
+		return nil, frame.BadRequestError(err)
+	}
+	err := controller.service.BakJsonRestore(context, ddwBak)
+	if err != nil {
+		return nil, frame.DefaultError(err)
+	}
+	return frame.OK("ddwBakJsonFile restore success..."), nil
+}
+
+func (controller Controller) monitorCheck(context *gin.Context) (*frame.Response, *frame.Error) {
+	err := controller.service.MonitorCheck(context)
+	if err != nil {
+		return nil, frame.DefaultError(err)
+	}
+	return frame.OK("MonitorCheck success..."), nil
 }

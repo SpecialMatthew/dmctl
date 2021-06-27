@@ -1,0 +1,14 @@
+{{- with .Configs }}
+MAL_CHECK_INTERVAL = 5 #MAL 链路检测时间间隔
+MAL_CONN_FAIL_INTERVAL = 5 #判定 MAL 链路断开的时间
+{{- range $index := until (int (default "1" $.Replicas)) }}
+[MAL_INST{{ add1 $index }}]
+MAL_INST_NAME = {{ default "GRP1_RT_{{ add1 $index }}"  (get $.Configs $index "MAL_INST" "MAL_INST_NAME") }} #实例名，和 dm.ini 中的 INSTANCE_NAME 一致
+MAL_HOST = {{ (get $.Configs $index "MAL_INST" "MAL_HOST") }} #MAL 系统监听 TCP 连接的 IP 地址
+MAL_PORT = {{ default "61141" (get $.Configs $index "MAL_INST" "MAL_PORT") }} #MAL 系统监听 TCP 连接的端口
+MAL_INST_HOST = {{ (get $.Configs $index "MAL_INST" "MAL_INST_HOST") }} #实例的对外服务 IP 地址
+MAL_INST_PORT = {{ default "32141" (get $.Configs $index "MAL_INST" "MAL_INST_PORT") }} #实例的对外服务端口，和 dm.ini 中的 PORT_NUM 一致
+MAL_DW_PORT = {{ default "52141" (get $.Configs $index "MAL_INST" "MAL_DW_PORT") }} #实例对应的守护进程监听 TCP 连接的端口
+MAL_INST_DW_PORT = {{ default "33141" (get $.Configs $index "MAL_INST" "MAL_INST_DW_PORT") }} #实例监听守护进程 TCP 连接的端口
+{{- end }}
+{{- end }}

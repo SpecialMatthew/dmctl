@@ -13,10 +13,16 @@ package tools
 
 import (
 	"dmctl/internal/pkg/business/v1/common/typed"
+	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"k8s.io/klog/v2"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
 )
 
 func GetEnv(name, def string) string {
@@ -27,6 +33,7 @@ func GetEnv(name, def string) string {
 	return def
 }
 
+// CreateDir 创建文件夹(支持创建嵌套文件夹)
 func CreateDir(filePath string) error {
 	exist, err := PathExists(filePath)
 	if err != nil {
@@ -38,19 +45,17 @@ func CreateDir(filePath string) error {
 		klog.Infof("has dir![%v]\n", filePath)
 	} else {
 		// 创建文件夹
-		err := os.Mkdir(filePath, os.ModePerm)
+		err := os.MkdirAll(filePath, os.ModePerm)
 		if err != nil {
-			klog.Infof("mkdir failed![%v]\n", err)
-			return err
-		} else {
-			klog.Infof("mkdir [%v] success!\n", filePath)
+			klog.Errorf("mkdir %s failed![%v]\n", filePath, err)
 			return err
 		}
+		klog.Infof("mkdir [%v] success!\n", filePath)
 	}
 	return nil
 }
 
-// 判断文件夹是否存在
+// PathExists 判断文件夹是否存在
 func PathExists(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if err == nil {
@@ -62,7 +67,7 @@ func PathExists(path string) (bool, error) {
 	return false, err
 }
 
-//创建文件，写入内容（可选）,是否覆盖原文件
+// CreateFile 创建文件，写入内容（可选）,是否覆盖原文件
 func CreateFile(fileName string, fileContent string, override bool) error {
 	exist, err := PathExists(fileName)
 	if err != nil {
@@ -85,12 +90,17 @@ func CreateFile(fileName string, fileContent string, override bool) error {
 				return err
 			}
 		}
+		err = os.Chmod(fileName, os.ModePerm)
+		if err != nil {
+			klog.Errorf("chmod file %s error![%v]\n", fileName, err)
+			return err
+		}
 		klog.Infof("create file %s success", fileName)
 	}
 	return nil
 }
 
-//将内容以覆盖的形式写入文件
+// WriteToFile 将内容以覆盖的形式写入文件
 func WriteToFile(fileName string, content string) error {
 	f, err := os.OpenFile(fileName, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0644)
 	if err != nil {
@@ -106,9 +116,75 @@ func WriteToFile(fileName string, content string) error {
 	return err
 }
 
+// ReadFile 一次性读取文件内容(文件不能太大)
+func ReadFile(fileName string) (string, error) {
+	bytes, err := ioutil.ReadFile(fileName)
+	if err != nil {
+		klog.Errorf("ReadFile file[%v] error: %v", fileName, err)
+		return "", err
+	}
+	return string(bytes), err
+}
+
 func ConfigArr2Map(arrs []*typed.ConfigValue, maps map[string]*typed.ConfigValue) map[string]*typed.ConfigValue {
 	for _, v := range arrs {
 		maps[v.Name] = v
 	}
 	return maps
+}
+
+func Files(path, pattern string) (files []string) {
+	regex, err := regexp.Compile(pattern)
+	if err != nil {
+		klog.Errorf("compile regex error: %v", err)
+		return nil
+	}
+	if err := filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+		if err == nil && regex.MatchString(info.Name()) {
+			files = append(files, path)
+		}
+		return nil
+	}); err != nil {
+		klog.Errorf("recursive file error: %v", err)
+		return nil
+	}
+	return files
+}
+
+func GetDbPort() (*string, error) {
+	instancePath := GetEnv("DM_INIT_PATH", GetEnv("DM_HOME", "/opt/dmdbms")+"/data") + "/" + GetEnv("DM_INIT_DB_NAME", "DAMENG")
+	dmIniExist, err := PathExists(instancePath + "/dm.ini")
+	if err != nil {
+		klog.Errorf("get dm.ini error: %s......", err)
+	}
+
+	if dmIniExist {
+		//去掉文件中每行开头tab
+		formatConfigCmdStr := "sed -i 's/^\t*//g' " + instancePath + "/dm.ini"
+		klog.Infof("format configFile command: %s", formatConfigCmdStr)
+		cmd := exec.Command("bash", "-c", formatConfigCmdStr)
+		err = cmd.Run()
+		if err != nil {
+			klog.Errorf("format configFile dm.ini command error: %s......", err)
+			return nil, err
+		}
+
+		//获取db_port
+		getPortNumCmdStr := `res=$(sed -r -n '/^PORT_NUM/'p ` + instancePath + `/dm.ini);res=${res#*=};res=${res%%#*};echo $res`
+		klog.Infof("getPortNumCmd : %s", getPortNumCmdStr)
+		getPortNumCmd := exec.Command("bash", "-c", getPortNumCmdStr)
+		portNumBytes, err := getPortNumCmd.CombinedOutput()
+		if err != nil {
+			klog.Errorf("getPortNum error: %s......", err)
+			return nil, err
+		}
+		dbPort := string(portNumBytes)
+		dbPort = strings.Trim(dbPort, "\n")
+		klog.Infof("DB_PORT is [%s]", dbPort)
+		return &dbPort, nil
+	} else {
+		klog.Errorf("dm.ini has yet created!")
+		return nil, errors.New("dm.ini has yet created!")
+	}
+
 }

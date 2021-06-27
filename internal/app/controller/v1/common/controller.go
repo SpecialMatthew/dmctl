@@ -34,6 +34,12 @@ func (controller *Controller) Register(engine *frame.DmEngine) {
 	engine.GET("/dmctl/v1/dmserver/pause", controller.dmserverPause)
 	engine.GET("/dmctl/v1/dmserver/restart", controller.dmserverRestart)
 	engine.GET("/dmctl/v1/listenPort/:type/:port", controller.listenPort)
+	engine.GET("/dmctl/v1/dmap/start", controller.dmapStart)
+	engine.GET("/dmctl/v1/dmap/quit", controller.dmapQuit)
+	engine.GET("/dmctl/v1/dmwatcher/start", controller.dmwatcherStart)
+	engine.GET("/dmctl/v1/dmwatcher/quit", controller.dmwatcherQuit)
+	engine.GET("/dmctl/ping/:addr", controller.ping)
+	engine.GET("/dmctl/v1/dmserver/status", controller.status)
 }
 
 func (controller Controller) dmserverStart(context *gin.Context) (*frame.Response, *frame.Error) {
@@ -98,9 +104,57 @@ func (controller Controller) execSql(context *gin.Context) (*frame.Response, *fr
 }
 
 func (controller Controller) listenPort(context *gin.Context) (*frame.Response, *frame.Error) {
-	err := controller.service.ListenPort(context, context.Param("type"), context.Param("port"))
+	err := controller.service.ListenPort(context, context.Param("type"), "localhost", context.Param("port"))
 	if err != nil {
 		return nil, frame.DefaultError(err)
 	}
 	return frame.OK("开始监听端口:" + context.Param("port")), nil
+}
+
+func (controller Controller) dmapStart(context *gin.Context) (*frame.Response, *frame.Error) {
+	err := controller.service.DmapStart(context)
+	if err != nil {
+		return nil, frame.DefaultError(err)
+	}
+	return frame.OK("开始启动dmap..."), nil
+}
+
+func (controller Controller) dmapQuit(context *gin.Context) (*frame.Response, *frame.Error) {
+	err := controller.service.DmapQuit(context)
+	if err != nil {
+		return nil, frame.DefaultError(err)
+	}
+	return frame.OK("关闭dmap..."), nil
+}
+
+func (controller Controller) dmwatcherStart(context *gin.Context) (*frame.Response, *frame.Error) {
+	err := controller.service.DmwatcherStart(context)
+	if err != nil {
+		return nil, frame.DefaultError(err)
+	}
+	return frame.OK("开始启动dmwatcher..."), nil
+}
+
+func (controller Controller) dmwatcherQuit(context *gin.Context) (*frame.Response, *frame.Error) {
+	err := controller.service.DmwatcherQuit(context)
+	if err != nil {
+		return nil, frame.DefaultError(err)
+	}
+	return frame.OK("关闭dmwatcher..."), nil
+}
+
+func (controller Controller) ping(context *gin.Context) (*frame.Response, *frame.Error) {
+	ip, err := controller.service.Ping(context.Param("addr"))
+	if err != nil {
+		return nil, frame.DefaultError(err)
+	}
+	return frame.OK(*ip), nil
+}
+
+func (controller Controller) status(context *gin.Context) (*frame.Response, *frame.Error) {
+	err := controller.service.DmserverStatus(context)
+	if err != nil {
+		return nil, frame.DefaultError(err)
+	}
+	return frame.OK("dm status ok"), nil
 }

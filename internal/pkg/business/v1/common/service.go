@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"github.com/fsnotify/fsnotify"
 	"github.com/gin-gonic/gin"
+	"github.com/go-ping/ping"
 	"io"
 	"io/ioutil"
 	"k8s.io/klog/v2"
@@ -27,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -35,12 +37,16 @@ import (
 type Service struct{}
 
 var pauseSignal = make(chan string)
+var quitDmap = make(chan string)
+var quitDmwatcher = make(chan string)
 var exitVirtualListening = make(chan string)
 var dmServer *exec.Cmd
+var dmAp *exec.Cmd
+var dmWatcher *exec.Cmd
 var virtualListening *exec.Cmd
 
-const HOT_CONFIG = "dynamic"   //热修改配置，可以在数据库运行时修改
-const STATIC_CONFIG = "static" //冷修改，数据库停止时修改
+const HotConfig = "dynamic"   //热修改配置，可以在数据库运行时修改
+const StaticConfig = "static" //冷修改，数据库停止时修改
 
 func asyncLog(reader io.ReadCloser, logTitle string) error {
 	cache := ""
@@ -51,6 +57,7 @@ func asyncLog(reader io.ReadCloser, logTitle string) error {
 			if err == io.EOF || strings.Contains(err.Error(), "closed") {
 				err = nil
 			}
+			klog.Errorf(logTitle+" log read err:%s", err)
 			return err
 		}
 		if num > 0 {
@@ -64,10 +71,11 @@ func asyncLog(reader io.ReadCloser, logTitle string) error {
 }
 
 func (service Service) DmserverStart(context *gin.Context, params map[string]interface{}) error {
-	var dmErr error = nil
+	startModel, hasStartModel := params["startModel"]
+	var dmErr error
 	go func() {
 		//判断数据库是否已经启动
-		dmStart := (dmServer != nil)
+		dmStart := dmServer != nil
 		klog.Infof("dmStart: %s......", dmStart)
 		if !dmStart {
 		Loop:
@@ -77,10 +85,10 @@ func (service Service) DmserverStart(context *gin.Context, params map[string]int
 					klog.Infof("pause dmserver: %s......", pauseSignal)
 					break Loop
 				default:
-					virtualListeningStart := (virtualListening != nil)
+					virtualListeningStart := virtualListening != nil
 					klog.Infof("virtualListeningStart: %s......", virtualListeningStart)
 					if virtualListeningStart {
-						virtualListeningProcessStart := (virtualListening.Process != nil)
+						virtualListeningProcessStart := virtualListening.Process != nil
 						klog.Infof("virtualListeningProcessStart: %s......", virtualListeningProcessStart)
 						if virtualListeningProcessStart {
 							err := syscall.Kill(-virtualListening.Process.Pid, syscall.SIGKILL)
@@ -98,12 +106,19 @@ func (service Service) DmserverStart(context *gin.Context, params map[string]int
 						}
 					}
 
-					cmdStr := "cd ${DM_HOME}/bin && ./dmserver ${DM_INIT_PATH}/${DM_INIT_DB_NAME:-DAMENG}/dm.ini"
+					cmdStr := "cd ${DM_HOME}/bin && ./dmserver ${DM_INIT_PATH}/${DM_INIT_DB_NAME:-DAMENG}/dm.ini "
+					if hasStartModel {
+						cmdStr = cmdStr + startModel.(string)
+					}
 					klog.Infof("dmserver start command: %s", cmdStr)
 
 					cmd := exec.Command("bash", "-c", cmdStr)
 					//使创建的线程都在同一个线程组里面，便于停止线程及子线程
-					cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+					cmd.SysProcAttr = &syscall.SysProcAttr{
+						Setpgid:                    true,
+						Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+						GidMappingsEnableSetgroups: true,
+					}
 
 					outf, err := cmd.StdoutPipe()
 					if err != nil {
@@ -113,6 +128,7 @@ func (service Service) DmserverStart(context *gin.Context, params map[string]int
 					if err != nil {
 						klog.Errorf("Error StderrPipe: %s......", err.Error())
 					}
+
 					go asyncLog(errf, "dmserver")
 					go asyncLog(outf, "dmserver")
 
@@ -133,6 +149,8 @@ func (service Service) DmserverStart(context *gin.Context, params map[string]int
 				}
 
 			}
+		} else {
+			klog.Infof("dmServer is running...")
 		}
 	}()
 
@@ -140,11 +158,16 @@ func (service Service) DmserverStart(context *gin.Context, params map[string]int
 }
 
 func (service Service) DmserverPause(context *gin.Context) error {
+	dbPort, err := tools.GetDbPort()
+	if err != nil {
+		klog.Errorf("getDbPort err: %s", err)
+	}
+
 	//判断数据库是否已经启动
-	dmStart := (dmServer != nil)
+	dmStart := dmServer != nil
 	klog.Infof("dmStart: %s......", dmStart)
 	if dmStart {
-		err := syscall.Kill(-dmServer.Process.Pid, syscall.SIGKILL)
+		err := syscall.Kill(-dmServer.Process.Pid, syscall.SIGQUIT)
 		if err != nil {
 			if err.Error() == "no such process" {
 				klog.Warningf("DmserverPause warning: %s......", err.Error())
@@ -167,9 +190,13 @@ func (service Service) DmserverPause(context *gin.Context) error {
 					klog.Infof("stop virtualListening: %s......", stop)
 					break Loop
 				default:
-					cmd := exec.Command("nc", "-lp", typed.DbPort)
+					cmd := exec.Command("nc", "-lp", *dbPort)
 					//使创建的线程都在同一个线程组里面，便于停止线程及子线程
-					cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+					cmd.SysProcAttr = &syscall.SysProcAttr{
+						Setpgid:                    true,
+						Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+						GidMappingsEnableSetgroups: true,
+					}
 					virtualListening = cmd
 
 					err := cmd.Run()
@@ -201,8 +228,12 @@ func (service Service) DmserverRestart(context *gin.Context, params map[string]i
 }
 
 func (service Service) ExecSql(context *gin.Context, internalSql string) error {
+	dbPort, err := tools.GetDbPort()
+	if err != nil {
+		klog.Errorf("getDbPort err: %s", err)
+	}
 
-	_, err := net.Dial("tcp", "localhost:"+typed.DbPort)
+	_, err = net.Dial("tcp", "localhost:"+*dbPort)
 	if err != nil {
 		klog.Infof("dmserver has yet to start, can not exec sql now")
 		return err
@@ -221,7 +252,7 @@ func (service Service) ExecSql(context *gin.Context, internalSql string) error {
 		klog.Infof("create /tmp/everything.sql error: %s", err)
 		return err
 	}
-	execCmdStr := "echo 'exit;' >> /tmp/everything.sql && cd ${DM_HOME}/bin && ./disql SYSDBA/'\"" + tools.GetEnv("DM_INIT_SYSDBA_PWD", "Dameng7777") + "\"'@localhost:" + typed.DbPort + " '`/tmp/everything.sql'"
+	execCmdStr := "echo 'exit;' >> /tmp/everything.sql && cd ${DM_HOME}/bin && ./disql SYSDBA/'\"" + tools.GetEnv("DM_INIT_SYSDBA_PWD", "Dameng7777") + "\"'@localhost:" + *dbPort + " '`/tmp/everything.sql'"
 	klog.Infof("exec sql cmd : %s", execCmdStr)
 	execCmd := exec.Command("bash", "-c", execCmdStr)
 	err = execCmd.Run()
@@ -233,7 +264,12 @@ func (service Service) ExecSql(context *gin.Context, internalSql string) error {
 }
 
 func (service Service) InitSql(context *gin.Context) error {
-	_, err := net.Dial("tcp", "localhost:"+typed.DbPort)
+	dbPort, err := tools.GetDbPort()
+	if err != nil {
+		klog.Errorf("getDbPort err: %s", err)
+	}
+
+	_, err = net.Dial("tcp", "localhost:"+*dbPort)
 	if err != nil {
 		klog.Infof("dmserver has yet to start, can not exec sql now")
 		return err
@@ -246,7 +282,7 @@ func (service Service) InitSql(context *gin.Context) error {
 	}
 
 	if exist {
-		execCmdStr := "cat ${DM_HOME}/script.d/genesis.sql > /tmp/genesis.sql && echo 'exit;' >> /tmp/genesis.sql && cd ${DM_HOME}/bin && ./disql SYSDBA/'\"" + tools.GetEnv("DM_INIT_SYSDBA_PWD", "Dameng7777") + "\"'@localhost:" + typed.DbPort + " '`/tmp/genesis.sql'"
+		execCmdStr := "cat ${DM_HOME}/script.d/genesis.sql > /tmp/genesis.sql && echo 'exit;' >> /tmp/genesis.sql && chmod 777 /tmp/genesis.sql && cd ${DM_HOME}/bin && ./disql SYSDBA/'\"" + tools.GetEnv("DM_INIT_SYSDBA_PWD", "Dameng7777") + "\"'@localhost:" + *dbPort + " '`/tmp/genesis.sql'"
 		klog.Infof("exec sql cmd : %s", execCmdStr)
 		execCmd := exec.Command("bash", "-c", execCmdStr)
 		err = execCmd.Run()
@@ -278,6 +314,12 @@ func (service Service) DmInit(context *gin.Context, params map[string]interface{
 	}
 
 	cmd := exec.Command("bash", "-c", cmdStr)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid:                    true,
+		Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+		GidMappingsEnableSetgroups: true,
+	}
+	klog.Errorf("dminit exec  command: %s......", cmd.String())
 
 	outf, err := cmd.StdoutPipe()
 	if err != nil {
@@ -313,6 +355,11 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 		formatConfigCmdStr := "sed -i 's/^\t*//g' " + configPath
 		klog.Infof("format configFile command: %s", formatConfigCmdStr)
 		cmd := exec.Command("bash", "-c", formatConfigCmdStr)
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid:                    true,
+			Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+			GidMappingsEnableSetgroups: true,
+		}
 		err := cmd.Run()
 		if err != nil {
 			klog.Errorf("format configFile %s command error: %s......", v.Type, err)
@@ -325,15 +372,31 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 			checkGroupCmdStr := "res=$(sed -r -n '/^\\[" + v.Group + "\\]/'p " + configPath + ");[[ -z $res ]] && echo [" + v.Group + "] >> " + configPath + " || echo group exist"
 			klog.Infof("check %s group exist command: %s", configPath, checkGroupCmdStr)
 			checkGroupCmd := exec.Command("bash", "-c", checkGroupCmdStr)
+			checkGroupCmd.SysProcAttr = &syscall.SysProcAttr{
+				Setpgid:                    true,
+				Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+				GidMappingsEnableSetgroups: true,
+			}
 			err := checkGroupCmd.Run()
 			if err != nil {
 				klog.Errorf("check %s group error: %s......", configPath, err)
 				return err
 			}
 			//在属组下修改or新增参数
-			editConfigCmdStr := "res=$(sed -r -n '/^" + name + "/'p " + configPath + ");[[ -n $res ]] && sed -i -r -e 's$^" + name + "(.*)$" + name + "=" + v.Value + " #" + v.Group + " #edit$' " + configPath + " || sed -i '/\\[" + v.Group + "\\]/a" + name + "=" + v.Value + " #" + v.Group + " #edit' " + configPath
+			editConfigCmdStr := "res=$(sed -r -n '/^" + strings.ReplaceAll(name, v.Group+"_", "") + "/'p " + configPath + " |grep '#" + v.Group + "');[[ -n $res ]] && sed -i -r -e 's$^" + strings.ReplaceAll(name, v.Group+"_", "") + "(.*)$" + strings.ReplaceAll(name, v.Group+"_", "") + "=" + v.Value + " #" + v.Group + " #edit$' " + configPath + " || sed -i '/\\[" + v.Group + "\\]/a" + strings.ReplaceAll(name, v.Group+"_", "") + "=" + v.Value + " #" + v.Group + " #edit' " + configPath
+			if v.Repeatable {
+				editConfigCmdStr = "sed -i '/\\[" + v.Group + "\\]/a" + strings.ReplaceAll(name[:strings.LastIndex(name, "-")], v.Group+"_", "") + "=" + v.Value + " #" + v.Group + " #edit' " + configPath
+			}
+			if v.Type == "dmarch.ini" {
+				editConfigCmdStr = "res=$(sed -r -n '/^" + strings.ReplaceAll(name, v.Group+"_", "") + "/'p " + configPath + " |grep '#" + v.Group + "');[[ -n $res ]] && line=$(grep -n \"${res}\" " + configPath + " | sed 's/:.*//g' ) && sed -i ''${line}'c" + strings.ReplaceAll(name, v.Group+"_", "") + "=" + v.Value + " #" + v.Group + " #edit$' " + configPath + " || sed -i '/\\[" + v.Group + "\\]/a" + strings.ReplaceAll(name, v.Group+"_", "") + "=" + v.Value + " #" + v.Group + " #edit' " + configPath
+			}
 			klog.Infof("edit %s command: %s", configPath, editConfigCmdStr)
 			cmd := exec.Command("bash", "-c", editConfigCmdStr)
+			cmd.SysProcAttr = &syscall.SysProcAttr{
+				Setpgid:                    true,
+				Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+				GidMappingsEnableSetgroups: true,
+			}
 			err = cmd.Run()
 			if err != nil {
 				klog.Errorf("edit %s error: %s......", configPath, err)
@@ -342,7 +405,7 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 			isServerRestart++
 		} else {
 			klog.Infof("ConfigParam: %s:%s:%s", v.Type, name, v.Value)
-			if v.Type == "dm.ini" && configModel == HOT_CONFIG {
+			if v.Type == "dm.ini" && configModel == HotConfig {
 				_, ok := pkg.DmIni[name]
 				if ok {
 					if pkg.DmIni[name].Attribute == 0 || pkg.DmIni[name].Attribute == 1 {
@@ -350,6 +413,11 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 						editConfigCmdStr := "res=$(sed -r -n '/^" + name + "/'p " + configPath + ");[[ -n $res ]] && sed -i -r -e 's$^" + name + "(.*)$" + name + "=" + v.Value + " #edit$' " + configPath + " || echo " + name + "=" + v.Value + " #edit >>" + configPath
 						klog.Infof("edit %s command: %s", configPath, editConfigCmdStr)
 						cmd := exec.Command("bash", "-c", editConfigCmdStr)
+						cmd.SysProcAttr = &syscall.SysProcAttr{
+							Setpgid:                    true,
+							Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+							GidMappingsEnableSetgroups: true,
+						}
 						err := cmd.Run()
 						if err != nil {
 							klog.Errorf("edit %s error: %s......", configPath, err)
@@ -374,9 +442,14 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 				}
 			} else {
 				//修改or新增参数
-				editConfigCmdStr := "res=$(sed -r -n '/^" + name + "/'p " + configPath + ");[[ -n $res ]] && sed -i -r -e 's$^" + name + "(.*)$" + name + "=" + v.Value + " #edit$' " + configPath + " || echo " + name + "=" + v.Value + " #edit >>" + configPath
+				editConfigCmdStr := "res=$(sed -r -n '/^" + name + "/'p " + configPath + ");[[ -n $res ]] && sed -i -r -e 's$^" + name + "(.*)$" + name + "=" + v.Value + " #edit$' " + configPath + " || sed -i '1i" + name + "=" + v.Value + " #edit' " + configPath
 				klog.Infof("edit %s command: %s", configPath, editConfigCmdStr)
 				cmd := exec.Command("bash", "-c", editConfigCmdStr)
+				cmd.SysProcAttr = &syscall.SysProcAttr{
+					Setpgid:                    true,
+					Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+					GidMappingsEnableSetgroups: true,
+				}
 				err := cmd.Run()
 				if err != nil {
 					klog.Errorf("edit %s error: %s......", configPath, err)
@@ -396,7 +469,7 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 		}
 	}
 
-	if isServerRestart > 0 && configModel == HOT_CONFIG {
+	if isServerRestart > 0 && configModel == HotConfig {
 		klog.Infof("config params contains manual or static params, need to restart dmserver to make it useful")
 		service.DmserverRestart(context, nil)
 	}
@@ -404,11 +477,29 @@ func (service Service) Config(context *gin.Context, params map[string]*typed.Con
 	return nil
 }
 
-func (service Service) ListenPort(context *gin.Context, serviceType string, port string) error {
+func (service Service) CreateConfigFile(configFile *typed.ConfigFile, filePath string, templateName string) error {
+	//klog.Infof("%s Configs: %s", filePath, configFile.Configs)
+	configFileContent, err := tools.ParseTemplate(templateName, configFile)
+	if err != nil {
+		klog.Errorf("%s parse error: %v", templateName, err)
+		return err
+	}
+
+	klog.Infof("%s content: %s", filePath, configFileContent)
+
+	err = tools.CreateFile(filePath, configFileContent, true)
+	if err != nil {
+		klog.Errorf("create [%s] error: %v", filePath, err)
+		return err
+	}
+	return nil
+}
+
+func (service Service) ListenPort(context *gin.Context, serviceType string, ip string, port string) error {
 	for {
-		_, err := net.Dial(serviceType, "localhost:"+port)
+		_, err := net.Dial(serviceType, ip+":"+port)
 		if err != nil {
-			klog.Infof("serviceType: %s ,port: %s has yet to start", serviceType, port)
+			klog.Infof("serviceType: %s ,ip %s, port: %s has yet to start", serviceType, ip, port)
 			time.Sleep(time.Millisecond * 1500)
 		} else {
 			break
@@ -490,7 +581,7 @@ func (service Service) ConfigsWatchDog(context *gin.Context, file string, watche
 							}
 							klog.Infof("dmConfigs: %s", dmConfigs)
 
-							err = service.Config(context, dmConfigs, HOT_CONFIG)
+							err = service.Config(context, dmConfigs, HotConfig)
 							if err != nil {
 								klog.Errorf("modify Configs err: %s", err)
 							} else {
@@ -525,6 +616,354 @@ func (service Service) ConfigsWatchDog(context *gin.Context, file string, watche
 		klog.Errorf("add watcher dmctl.ini error: %s", err)
 		return err
 	}
+
+	return nil
+}
+
+func (service Service) DmapStart(context *gin.Context) error {
+	var dmapErr error
+	go func() {
+		//判断dmmap服务是否已经启动
+		dmapStart := dmAp != nil
+		klog.Infof("dmapStart: %s......", dmapStart)
+		if !dmapStart {
+		Loop:
+			for {
+				select {
+				case quitDmap := <-quitDmap:
+					klog.Infof("quit dmap: %s......", quitDmap)
+					break Loop
+				default:
+					cmdStr := "cd ${DM_HOME}/bin && ./dmap"
+					klog.Infof("dmap start command: %s", cmdStr)
+
+					cmd := exec.Command("bash", "-c", cmdStr)
+					cmd.SysProcAttr = &syscall.SysProcAttr{
+						Setpgid:                    true,
+						Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+						GidMappingsEnableSetgroups: true,
+					}
+					//使创建的线程都在同一个线程组里面，便于停止线程及子线程
+					cmd.SysProcAttr = &syscall.SysProcAttr{
+						Setpgid:                    true,
+						Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+						GidMappingsEnableSetgroups: true,
+					}
+
+					outf, err := cmd.StdoutPipe()
+					if err != nil {
+						klog.Errorf("Error StdoutPipe: %s......", err.Error())
+					}
+					errf, err := cmd.StderrPipe()
+					if err != nil {
+						klog.Errorf("Error StderrPipe: %s......", err.Error())
+					}
+
+					go asyncLog(errf, "dmap")
+					go asyncLog(outf, "dmap")
+
+					dmAp = cmd
+					err = cmd.Run()
+					if err != nil {
+						klog.Errorf("Error dmap starting command: %s......", err)
+					}
+				}
+
+			}
+		} else {
+			klog.Infof("dmap is running...")
+		}
+	}()
+
+	return dmapErr
+}
+
+func (service Service) DmmonitorStart(context *gin.Context) error {
+	go func() {
+		for {
+			cmdStr := "cd ${DM_HOME}/bin && ./dmmonitor ${DM_INIT_PATH}/${DM_INIT_DB_NAME:-DAMENG}/dmmonitor.ini"
+			klog.Infof("dmmonitor start command: %s", cmdStr)
+
+			cmd := exec.Command("bash", "-c", cmdStr)
+			cmd.SysProcAttr = &syscall.SysProcAttr{
+				Setpgid:                    true,
+				Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+				GidMappingsEnableSetgroups: true,
+			}
+			outf, err := cmd.StdoutPipe()
+			if err != nil {
+				klog.Errorf("Error StdoutPipe: %s......", err.Error())
+			}
+			errf, err := cmd.StderrPipe()
+			if err != nil {
+				klog.Errorf("Error StderrPipe: %s......", err.Error())
+			}
+
+			go asyncLog(errf, "dmmonitor")
+			go asyncLog(outf, "dmmonitor")
+
+			err = cmd.Run()
+			if err != nil {
+				klog.Errorf("Error dmmonitor starting command: %s......", err)
+			}
+		}
+	}()
+	return nil
+}
+
+func (service Service) DmapQuit(context *gin.Context) error {
+	//判断数据库是否已经启动
+	dmapStart := dmAp != nil
+	klog.Infof("dmapStart: %s......", dmapStart)
+	if dmapStart {
+		err := syscall.Kill(-dmAp.Process.Pid, syscall.SIGQUIT)
+		if err != nil {
+			if err.Error() == "no such process" {
+				klog.Warningf("DmapQuit warning: %s......", err.Error())
+				return nil
+			}
+			klog.Errorf("DmapQuit Error: %s......", err.Error())
+			return err
+		}
+		//添加数据库停止指令
+		quitDmap <- "quit"
+		//清除旧的dmAp
+		dmAp = nil
+	} else {
+		klog.Infof("dmap is not running...")
+	}
+
+	return nil
+}
+
+func (service Service) DmrmanExecCmd(context *gin.Context, internalCmd string) error {
+	var cmd string
+	if internalCmd != "" {
+		cmd = internalCmd
+	} else {
+		cmd = context.PostForm("cmd")
+	}
+	klog.Infof("dmrman exec cmd: %s", cmd)
+	execCmdStr := `cd ${DM_HOME}/bin && ./dmrman CTLSTMT="` + cmd + `"`
+	klog.Infof("exec dmrman cmd : %s", execCmdStr)
+	execCmd := exec.Command("bash", "-c", execCmdStr)
+	execCmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid:                    true,
+		Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+		GidMappingsEnableSetgroups: true,
+	}
+
+	outf, err := execCmd.StdoutPipe()
+	if err != nil {
+		klog.Errorf("Error StdoutPipe: %s......", err.Error())
+	}
+	errf, err := execCmd.StderrPipe()
+	if err != nil {
+		klog.Errorf("Error StderrPipe: %s......", err.Error())
+	}
+
+	go asyncLog(errf, "dmrman")
+	go asyncLog(outf, "dmrman")
+
+	err = execCmd.Run()
+	if err != nil {
+		klog.Errorf("exec dmrman cmd error: %s......", err)
+		return err
+	}
+	return nil
+}
+
+func (service Service) CheckProcessRunning(context *gin.Context, serverName string) error {
+	cmd := `ps aux | grep  ` + serverName + ` | grep -v grep`
+	klog.Infof("CheckProcessRunning cmd : %s......", cmd)
+	for {
+		result, err := exec.Command("/bin/sh", "-c", cmd).Output()
+		out := strings.TrimSpace(string(result))
+		if err != nil {
+			klog.Errorf("CheckProcessRunning err: %s... ", err)
+			time.Sleep(time.Millisecond * 1500)
+		}
+		if out == "" {
+			klog.Infof("Process %s has yet to start... ", serverName)
+			time.Sleep(time.Millisecond * 1500)
+		} else {
+			klog.Infof("Process %s has started...", serverName)
+			break
+		}
+	}
+
+	return nil
+}
+
+func (service Service) Ping(addr string) (*string, error) {
+	pinger, err := ping.NewPinger(addr)
+	if err != nil {
+		klog.Errorf("new ping err: %v", err)
+		return nil, err
+	}
+	pinger.SetPrivileged(true)
+	pinger.Count = 1
+	err = pinger.Run() // Blocks until finished.
+	if err != nil {
+		klog.Errorf("ping err: %v", err)
+		return nil, err
+	}
+	stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
+	ip := fmt.Sprint(stats.IPAddr.IP)
+	klog.V(8).Infof("addr[%v]", ip)
+	return &ip, nil
+}
+
+func (service Service) SyncHosts(objectName, namespace string, replicas int) error {
+	klog.Infof("/etc/hosts start synchronizing......")
+	for node := 0; node < replicas; node++ {
+		monDwDomainName := objectName + "-" + strconv.Itoa(node) + "." + objectName + "-hl." + namespace + ".svc.cluster.local"
+		go func(node int) {
+			for {
+				ipNew, err := service.Ping(monDwDomainName)
+				if err != nil {
+					klog.V(8).Infof("[%v] connect err: %s", monDwDomainName, err)
+					time.Sleep(time.Second * 3)
+					continue
+				}
+				checkHostsCmdStr := "cat /etc/hosts |grep '" + monDwDomainName + "' | awk '{print $1}'"
+				checkHostsCmd := exec.Command("bash", "-c", checkHostsCmdStr)
+				res, err := checkHostsCmd.CombinedOutput()
+				if err != nil {
+					klog.Errorf("check /etc/hosts err: %v", err)
+					continue
+				}
+				ip := string(res)
+				hosts := *ipNew + "\t" + monDwDomainName + "\t" + objectName + "-" + strconv.Itoa(node)
+
+				if len(res) == 0 {
+					cmdStr := "echo '" + hosts + "' >> /etc/hosts"
+					klog.Infof("add hosts command [%v]", cmdStr)
+					cmd := exec.Command("bash", "-c", cmdStr)
+					err := cmd.Run()
+					if err != nil {
+						klog.Errorf("add hosts err: %v", err)
+					}
+				} else if strings.Compare(ip, *ipNew) == -1 {
+					cmdStr := "line_num=$(sed -n -e '/" + monDwDomainName + "/=' " + "/etc/hosts);[[ -n $line_num ]] && echo \"$(sed \"${line_num}c " + hosts + "\" /etc/hosts)\" > /etc/hosts"
+					klog.Infof("sync hosts command [%v]", cmdStr)
+					cmd := exec.Command("bash", "-c", cmdStr)
+					err := cmd.Run()
+					if err != nil {
+						klog.Errorf("sync hosts err: %v", err)
+					}
+				}
+
+				time.Sleep(time.Second * 5)
+			}
+		}(node)
+	}
+	return nil
+}
+
+func (service Service) DmwatcherStart(context *gin.Context) error {
+	var dmwatcherErr error
+	go func() {
+		//判断dmwatcher服务是否已经启动
+		dmwatcherStart := dmWatcher != nil
+		klog.Infof("dmwatcherStart: %s......", dmwatcherStart)
+		if !dmwatcherStart {
+		Loop:
+			for {
+				select {
+				case quitDmwatcher := <-quitDmwatcher:
+					klog.Infof("quit dmwatcher: %s......", quitDmwatcher)
+					break Loop
+				default:
+					cmdStr := "cd ${DM_HOME}/bin && ./dmwatcher ${DM_INIT_PATH}/${DM_INIT_DB_NAME:-DAMENG}/dmwatcher.ini"
+					klog.Infof("dmwatcher start command: %s", cmdStr)
+
+					cmd := exec.Command("bash", "-c", cmdStr)
+					cmd.SysProcAttr = &syscall.SysProcAttr{
+						Setpgid:                    true,
+						Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+						GidMappingsEnableSetgroups: true,
+					}
+					//使创建的线程都在同一个线程组里面，便于停止线程及子线程
+					cmd.SysProcAttr = &syscall.SysProcAttr{
+						Setpgid:                    true,
+						Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
+						GidMappingsEnableSetgroups: true,
+					}
+
+					outf, err := cmd.StdoutPipe()
+					if err != nil {
+						klog.Errorf("Error StdoutPipe: %s......", err.Error())
+					}
+					errf, err := cmd.StderrPipe()
+					if err != nil {
+						klog.Errorf("Error StderrPipe: %s......", err.Error())
+					}
+
+					go asyncLog(errf, "dmwatcher")
+					go asyncLog(outf, "dmwatcher")
+
+					dmWatcher = cmd
+					err = cmd.Run()
+					if err != nil {
+						klog.Errorf("Error dmwatcher starting command: %s......", err)
+					}
+				}
+
+			}
+		} else {
+			klog.Infof("dmwatcher is running...")
+		}
+	}()
+
+	return dmwatcherErr
+}
+
+func (service Service) DmwatcherQuit(context *gin.Context) error {
+	//判断数据库是否已经启动
+	dmwatcherStart := dmWatcher != nil
+	klog.Infof("dmwatcherStart: %s......", dmwatcherStart)
+	if dmwatcherStart {
+		err := syscall.Kill(-dmWatcher.Process.Pid, syscall.SIGQUIT)
+		if err != nil {
+			if err.Error() == "no such process" {
+				klog.Warningf("DmwatcherQuit warning: %s......", err.Error())
+				return nil
+			}
+			klog.Errorf("DmwatcherQuit Error: %s......", err.Error())
+			return err
+		}
+		//添加数据库停止指令
+		quitDmwatcher <- "quit"
+		//清除旧的dmWatcher
+		dmWatcher = nil
+	} else {
+		klog.Infof("DmwatcherQuit is not running...")
+	}
+
+	return nil
+}
+
+func (service Service) DmserverStatus(context *gin.Context) error {
+	cmd := `ps aux | grep  "dmserver" | grep -v grep`
+	result, err := exec.Command("/bin/sh", "-c", cmd).Output()
+	out := strings.TrimSpace(string(result))
+	if err != nil {
+		klog.Errorf("Check dmserver status err: %s... ", err)
+		return err
+	}
+	klog.Infof("DmserverStatusOut: %s", out)
+
+	if out == "" {
+		klog.Infof("dmserver is not running... ")
+		return errors.New("dmserver is not running...")
+	} else {
+		klog.Infof("dmserver is running...")
+		return nil
+	}
+}
+
+func (service Service) Backup(context *gin.Context) error {
 
 	return nil
 }
