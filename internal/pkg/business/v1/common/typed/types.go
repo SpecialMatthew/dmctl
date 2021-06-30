@@ -26,6 +26,7 @@ type ConfigFile struct {
 	BootStrapModel string                  `json:"bootStrapModel"`
 	Configs        map[string]*ConfigValue `json:"configs"`
 	Replicas       int                     `json:"replicas"`
+	CurrentNode    int                     `json:"currentNode"`
 }
 
 //静态， 可以被动态修改， 修改后重启服务器才能生效。

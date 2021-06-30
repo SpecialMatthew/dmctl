@@ -1,14 +1,25 @@
 {{- with .Configs }}
-{{- if or (eq $.BootStrapModel "ddw_p") (eq $.BootStrapModel "rww_p") }}
+{{- if (eq $.BootStrapModel "ddw_p") }}
 {{- range $index := until (int (default "1" (sub (int $.Replicas) 1) )) }}
 [ARCHIVE_REALTIME{{ add1 $index }}]
 ARCH_TYPE = REALTIME #实时归档类型
 ARCH_DEST = GRP1_RT_{{ add $index 2 }} #实时归档目标实例名
 {{- end }}
-{{- else if or (eq $.BootStrapModel "ddw_s") (eq $.BootStrapModel "rww_p") }}
+{{- else if or (eq $.BootStrapModel "ddw_s") }}
 [ARCHIVE_REALTIME]
 ARCH_TYPE = REALTIME #实时归档类型
 ARCH_DEST = GRP1_RT_1 #实时归档目标实例名
+{{- end }}
+{{- if (eq $.BootStrapModel "rww") }}
+{{- $num := 1 }}
+{{- range $index := until (int (default "1" (int $.Replicas) )) }}
+{{- if (ne $.CurrentNode $index) }}
+[ARCHIVE_TIMELY{{ $num }}]
+ARCH_TYPE = TIMELY #即时归档类型
+ARCH_DEST = GRP1_RWW_{{ add1 $index }} #即时归档目标实例名
+{{- $num = (add1 $num) }}
+{{- end }}
+{{- end }}
 {{- end }}
 [ARCHIVE_LOCAL1]
 ARCH_TYPE = {{ default "LOCAL" (index . "ARCHIVE_LOCAL1_ARCH_TYPE").Value }} #本地归档类型

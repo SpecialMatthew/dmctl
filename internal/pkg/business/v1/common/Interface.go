@@ -36,6 +36,6 @@ type Interface interface {
 	ConfigsWatchDog(context *gin.Context, file string, watcher *fsnotify.Watcher) error
 	CheckProcessRunning(context *gin.Context, serverName string) error
 	CreateConfigFile(configFile *typed.ConfigFile, filePath string, templateName string) error
-	Ping(addr string) (ip *string, err error)
+	Ping(addr string) (ip string, err error)
 	SyncHosts(objectName, namespace string, replicas int) error
 }

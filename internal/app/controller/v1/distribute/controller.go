@@ -31,7 +31,7 @@ func (controller *Controller) Register(engine *frame.DmEngine) {
 	engine.POST("/dmctl/v1/rww", controller.rww)
 	engine.POST("/dmctl/v1/ddw", controller.ddw)
 	engine.POST("/dmctl/v1/monitor", controller.monitor)
-	engine.GET("/dmctl/v1/ddwWakeup", controller.ddwWakeUp)
+	engine.GET("/dmctl/v1/nodeWakeup", controller.nodeWakeUp)
 	engine.GET("/dmctl/v1/monitorWakeUp", controller.monitorWakeUp)
 	engine.GET("/dmctl/v1/primaryDbWakeUp", controller.primaryDbWakeUp)
 	engine.GET("/dmctl/health", controller.health)
@@ -60,12 +60,12 @@ func (controller Controller) monitor(context *gin.Context) (*frame.Response, *fr
 	return frame.OK("开始部署monitor..."), nil
 }
 
-func (controller Controller) ddwWakeUp(context *gin.Context) (*frame.Response, *frame.Error) {
-	err := controller.service.DDWWakeUp(context)
+func (controller Controller) nodeWakeUp(context *gin.Context) (*frame.Response, *frame.Error) {
+	err := controller.service.NodeWakeUp(context)
 	if err != nil {
 		return nil, frame.DefaultError(err)
 	}
-	return frame.OK("ddwWakeup success..."), nil
+	return frame.OK("Wakeup success..."), nil
 }
 
 func (controller Controller) monitorWakeUp(context *gin.Context) (*frame.Response, *frame.Error) {

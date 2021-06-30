@@ -23,7 +23,7 @@ type Interface interface {
 	Monitor(context *gin.Context, configs string) error
 	MonitorCheck(context *gin.Context) error
 	RWW(context *gin.Context, configs string) error
-	DDWWakeUp(context *gin.Context) error
+	NodeWakeUp(context *gin.Context) error
 	MonitorWakeUp(context *gin.Context) error
 	PrimaryDbWakeUp(context *gin.Context) error
 	BakJsonRestore(context *gin.Context, ddwBak *typed.DdwBak) error

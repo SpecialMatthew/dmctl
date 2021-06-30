@@ -148,7 +148,7 @@ func (controller Controller) ping(context *gin.Context) (*frame.Response, *frame
 	if err != nil {
 		return nil, frame.DefaultError(err)
 	}
-	return frame.OK(*ip), nil
+	return frame.OK(ip), nil
 }
 
 func (controller Controller) status(context *gin.Context) (*frame.Response, *frame.Error) {

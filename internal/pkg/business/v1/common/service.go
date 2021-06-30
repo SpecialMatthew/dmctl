@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"github.com/fsnotify/fsnotify"
 	"github.com/gin-gonic/gin"
-	"github.com/go-ping/ping"
 	"io"
 	"io/ioutil"
 	"k8s.io/klog/v2"
@@ -638,11 +637,6 @@ func (service Service) DmapStart(context *gin.Context) error {
 					klog.Infof("dmap start command: %s", cmdStr)
 
 					cmd := exec.Command("bash", "-c", cmdStr)
-					cmd.SysProcAttr = &syscall.SysProcAttr{
-						Setpgid:                    true,
-						Credential:                 &syscall.Credential{Uid: uint32(1001), Gid: uint32(1001)},
-						GidMappingsEnableSetgroups: true,
-					}
 					//使创建的线程都在同一个线程组里面，便于停止线程及子线程
 					cmd.SysProcAttr = &syscall.SysProcAttr{
 						Setpgid:                    true,
@@ -795,8 +789,24 @@ func (service Service) CheckProcessRunning(context *gin.Context, serverName stri
 	return nil
 }
 
-func (service Service) Ping(addr string) (*string, error) {
-	pinger, err := ping.NewPinger(addr)
+func (service Service) Ping(addr string) (string, error) {
+	cmdStr := "ping " + addr + " -c 1 | grep PING | awk '{print $3}'"
+	cmd := exec.Command("/bin/bash", "-c", cmdStr)
+	ipByte, err := cmd.CombinedOutput()
+	if err != nil {
+		klog.Errorf("new ping err: %v", err)
+		return "", err
+	}
+	ip := string(ipByte)
+	if strings.Contains(ip, "Name or service not known") {
+		klog.V(8).Infof("Name or service not known")
+		return "", errors.New("Name or service not known")
+	}
+	ip = ip[1 : len(ip)-2]
+	klog.V(8).Infof("addr[%v]", ip)
+	return ip, nil
+
+	/*pinger, err := ping.NewPinger(addr)
 	if err != nil {
 		klog.Errorf("new ping err: %v", err)
 		return nil, err
@@ -811,7 +821,7 @@ func (service Service) Ping(addr string) (*string, error) {
 	stats := pinger.Statistics() // get send/receive/duplicate/rtt stats
 	ip := fmt.Sprint(stats.IPAddr.IP)
 	klog.V(8).Infof("addr[%v]", ip)
-	return &ip, nil
+	return &ip, nil*/
 }
 
 func (service Service) SyncHosts(objectName, namespace string, replicas int) error {
@@ -826,7 +836,7 @@ func (service Service) SyncHosts(objectName, namespace string, replicas int) err
 					time.Sleep(time.Second * 3)
 					continue
 				}
-				checkHostsCmdStr := "cat /etc/hosts |grep '" + monDwDomainName + "' | awk '{print $1}'"
+				checkHostsCmdStr := "cat /etc/hosts |grep '" + objectName + "-" + strconv.Itoa(node) + "' | awk '{print $1}'"
 				checkHostsCmd := exec.Command("bash", "-c", checkHostsCmdStr)
 				res, err := checkHostsCmd.CombinedOutput()
 				if err != nil {
@@ -834,7 +844,10 @@ func (service Service) SyncHosts(objectName, namespace string, replicas int) err
 					continue
 				}
 				ip := string(res)
-				hosts := *ipNew + "\t" + monDwDomainName + "\t" + objectName + "-" + strconv.Itoa(node)
+				ip = strings.TrimSpace(ip)
+				hosts := ipNew + "\t" + objectName + "-" + strconv.Itoa(node)
+
+				klog.V(8).Infof("ip[%v],ipNew[%v]", ip, ipNew)
 
 				if len(res) == 0 {
 					cmdStr := "echo '" + hosts + "' >> /etc/hosts"
@@ -844,8 +857,8 @@ func (service Service) SyncHosts(objectName, namespace string, replicas int) err
 					if err != nil {
 						klog.Errorf("add hosts err: %v", err)
 					}
-				} else if strings.Compare(ip, *ipNew) == -1 {
-					cmdStr := "line_num=$(sed -n -e '/" + monDwDomainName + "/=' " + "/etc/hosts);[[ -n $line_num ]] && echo \"$(sed \"${line_num}c " + hosts + "\" /etc/hosts)\" > /etc/hosts"
+				} else if ip != ipNew {
+					cmdStr := "line_num=$(sed -n -e '/" + objectName + "-" + strconv.Itoa(node) + "/=' " + "/etc/hosts);[[ -n $line_num ]] && echo \"$(sed \"${line_num}c " + hosts + "\" /etc/hosts)\" > /etc/hosts"
 					klog.Infof("sync hosts command [%v]", cmdStr)
 					cmd := exec.Command("bash", "-c", cmdStr)
 					err := cmd.Run()
@@ -961,9 +974,4 @@ func (service Service) DmserverStatus(context *gin.Context) error {
 		klog.Infof("dmserver is running...")
 		return nil
 	}
-}
-
-func (service Service) Backup(context *gin.Context) error {
-
-	return nil
 }
